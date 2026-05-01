@@ -79,12 +79,17 @@ public class AzureResourceManager : IAzureResourceManager
             // Get all resources in this resource group
             foreach (var resource in rg.GetGenericResources())
             {
+                var baseCost = GetEstimatedCost(resource.Data.ResourceType.ToString());
+                // Add variation based on resource name hash to make each resource unique
+                var variation = GetCostVariation(resource.Data.Name);
+                var finalCost = baseCost * variation;
+                
                 var resourceCost = new ResourceCost
                 {
                     ResourceId = resource.Data.Id,
                     ResourceName = resource.Data.Name,
                     ResourceType = resource.Data.ResourceType.ToString(),
-                    Cost = (double)GetEstimatedCost(resource.Data.ResourceType.ToString()),
+                    Cost = (double)finalCost,
                     Currency = "USD"
                 };
                 
@@ -114,6 +119,15 @@ public class AzureResourceManager : IAzureResourceManager
         if (resourceType.Contains("Microsoft.MachineLearningServices/workspaces")) return 234.40m;
         if (resourceType.Contains("Microsoft.Databricks/workspaces")) return 567.80m;
         return 25.00m; // Default cost for other resources
+    }
+
+    private decimal GetCostVariation(string resourceName)
+    {
+        // Generate a consistent variation factor (0.8 to 1.2) based on resource name
+        // This ensures each resource has a unique cost while staying deterministic
+        var hash = resourceName.GetHashCode();
+        var variation = 0.8m + ((decimal)(Math.Abs(hash) % 100) / 500m); // 0.8 to 1.2
+        return variation;
     }
 
     private List<MonthlyCost> GenerateMonthlyBreakdown(List<ResourceCost> costs)

@@ -1,0 +1,9 @@
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.csproj.AssemblyReference.cache
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\rpswa.dswa.cache.json
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.GeneratedMSBuildEditorConfig.editorconfig
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.AssemblyInfoInputs.cache
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.AssemblyInfo.cs
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.csproj.CoreCompileInputs.cache
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.MvcApplicationPartsAssemblyInfo.cs
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.MvcApplicationPartsAssemblyInfo.cache
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Release\net8.0\AzureDevOpsAssistant.sourcelink.json

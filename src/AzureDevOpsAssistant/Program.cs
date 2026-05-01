@@ -7,8 +7,6 @@ using ModelContextProtocol.Server;
 using Azure.Core;
 using AzureDevOpsAssistant.Services;
 using AzureDevOpsAssistant.Services.Interfaces;
-using Microsoft.AspNetCore.Mvc;
-using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -36,15 +34,17 @@ builder.Services.AddSingleton<TokenCredential>(sp =>
     return new AzureIdentity::Azure.Identity.DefaultAzureCredential();
 });
 
-// Register custom MCP server
-builder.Services.AddSingleton<CustomMcpServer>();
-
 // Register application services
 builder.Services.AddSingleton<IAzureResourceManager, AzureResourceManager>();
 builder.Services.AddSingleton<ISecurityAuditor, SecurityAuditor>();
 builder.Services.AddSingleton<IDeploymentOrchestrator, DeploymentOrchestrator>();
 builder.Services.AddSingleton<ILogAnalyzer, LogAnalyzer>();
 builder.Services.AddSingleton<IBackupManager, BackupManager>();
+
+// Configure MCP Server with HTTP transport (v1.2.0)
+builder.Services.AddMcpServer()
+    .WithHttpTransport()
+    .WithToolsFromAssembly();
 
 var app = builder.Build();
 
@@ -54,38 +54,22 @@ app.UseCors();
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok("healthy"));
 
-// Custom MCP endpoint
-app.MapPost("/mcp", async (HttpContext context, CustomMcpServer mcpServer) => {
-    await mcpServer.HandleRequest(context);
-});
+// Test endpoint
+app.MapGet("/test", () => Results.Json(new { message = "MCP Server is running", timestamp = DateTime.UtcNow }));
 
-app.Run();
-
-public class ToolRequest
+// Try to use MapMcp() for future compatibility, but always add fallback due to known bug
+try
 {
-    public string Command { get; set; }
+    app.MapMcp();
+    app.Logger.LogInformation("MapMcp() succeeded - MCP endpoints auto-created");
+}
+catch (Exception ex)
+{
+    app.Logger.LogWarning($"MapMcp() failed: {ex.Message}. Using fallback endpoint.");
 }
 
-public class CustomMcpServer
-{
-    private readonly IAzureResourceManager _resourceManager;
-    private readonly ISecurityAuditor _securityAuditor;
-    private readonly Dictionary<string, Func<string?, Task<object>>> _tools;
-
-    public CustomMcpServer(IAzureResourceManager resourceManager, ISecurityAuditor securityAuditor)
-    {
-        _resourceManager = resourceManager;
-        _securityAuditor = securityAuditor;
-        
-        _tools = new Dictionary<string, Func<string?, Task<object>>>
-        {
-            ["GetResourceCosts"] = async (resourceGroupName) => await _resourceManager.GetResourceCostsAsync(resourceGroupName),
-            ["GetResourceUtilization"] = async (resourceGroupName) => await _resourceManager.GetResourceUtilizationAsync(resourceGroupName),
-            ["AuditResources"] = async (resourceGroupName) => await _securityAuditor.AuditResourcesAsync(resourceGroupName)
-        };
-    }
-
-    public async Task HandleRequest(HttpContext context)
+// Always add fallback endpoint - MapMcp() has known bug where it reports success but doesn't create endpoints
+app.MapPost("/mcp", async (HttpContext context) =>
     {
         context.Response.Headers["Content-Type"] = "application/json";
         
@@ -94,7 +78,7 @@ public class CustomMcpServer
         
         try
         {
-            var request = JsonDocument.Parse(body);
+            var request = System.Text.Json.JsonDocument.Parse(body);
             var method = request.RootElement.GetProperty("method").GetString();
             var id = request.RootElement.TryGetProperty("id", out var idProp) ? idProp.GetInt64() : 0;
 
@@ -116,25 +100,80 @@ public class CustomMcpServer
                             },
                             serverInfo = new
                             {
-                                name = "AzureDevOpsAssistant",
-                                version = "1.0.0.0"
+                                name = "Azure DevOps Assistant",
+                                version = "1.0.0"
                             }
                         }
                     };
                     break;
 
                 case "tools/list":
-                    var tools = _tools.Select(kvp => new
-                    {
-                        name = kvp.Key,
-                        description = GetToolDescription(kvp.Key)
-                    }).ToArray();
-
                     response = new
                     {
                         jsonrpc = "2.0",
                         id,
-                        result = new { tools }
+                        result = new
+                        {
+                            tools = new object[]
+                            {
+                                new
+                                {
+                                    name = "GetResourceCosts",
+                                    description = "Get cost information for Azure resources with optional filtering by resource group",
+                                    inputSchema = new
+                                    {
+                                        type = "object",
+                                        properties = new
+                                        {
+                                            resourceGroupName = new
+                                            {
+                                                type = "string",
+                                                description = "Optional resource group name to filter costs by"
+                                            }
+                                        }
+                                    }
+                                },
+                                new
+                                {
+                                    name = "GetResourceUtilization",
+                                    description = "Get utilization information for Azure resources",
+                                    inputSchema = new
+                                    {
+                                        type = "object",
+                                        properties = new
+                                        {
+                                            resourceGroupName = new
+                                            {
+                                                type = "string",
+                                                description = "Optional resource group name to filter resources by"
+                                            },
+                                            resourceTypeFilter = new
+                                            {
+                                                type = "string",
+                                                description = "Optional resource type filter (e.g., 'Microsoft.Web/sites')"
+                                            }
+                                        }
+                                    }
+                                },
+                                new
+                                {
+                                    name = "AuditResources",
+                                    description = "Perform security audit on Azure resources",
+                                    inputSchema = new
+                                    {
+                                        type = "object",
+                                        properties = new
+                                        {
+                                            resourceGroupName = new
+                                            {
+                                                type = "string",
+                                                description = "Optional resource group name to filter audit by"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     };
                     break;
 
@@ -151,54 +190,133 @@ public class CustomMcpServer
                         }
                     }
 
-                    if (_tools.TryGetValue(toolName, out var toolFunc))
-                    {
-                        var resourceGroupName = arguments.ContainsKey("resourceGroupName") 
-                            ? arguments["resourceGroupName"]?.ToString() 
-                            : null;
-                        
-                        var result = await toolFunc(resourceGroupName);
-                        
-                        // Format the result for better readability
-                        var formattedResult = FormatResult(toolName, result);
-                        
-                        response = new
-                        {
-                            jsonrpc = "2.0",
-                            id,
-                            result = formattedResult
-                        };
-                    }
-                    else
-                    {
-                        response = new
-                        {
-                            jsonrpc = "2.0",
-                            id,
-                            error = new
-                            {
-                                code = -32601,
-                                message = $"Tool not found: {toolName}"
-                            }
-                        };
-                    }
-                    break;
+                    var serviceProvider = context.RequestServices;
+                    var resourceManager = serviceProvider.GetRequiredService<IAzureResourceManager>();
+                    var securityAuditor = serviceProvider.GetRequiredService<ISecurityAuditor>();
 
-                default:
-                    response = new
+                    switch (toolName)
                     {
-                        jsonrpc = "2.0",
-                        id,
-                        error = new
-                        {
-                            code = -32601,
-                            message = $"Method not found: {method}"
-                        }
-                    };
+                        case "GetResourceCosts":
+                            var resourceGroupName = arguments.GetValueOrDefault("resourceGroupName")?.ToString();
+                            var costResult = await resourceManager.GetResourceCostsAsync(resourceGroupName);
+                            
+                            var costToolOutput = new 
+                            {
+                                summary = $"Total Cost: {costResult.TotalCost:C} USD for {costResult.ResourceCosts.Count} resources from {costResult.PeriodStart:yyyy-MM-dd} to {costResult.PeriodEnd:yyyy-MM-dd}",
+                                totalCost = costResult.TotalCost,
+                                currency = costResult.Currency,
+                                periodStart = costResult.PeriodStart,
+                                periodEnd = costResult.PeriodEnd,
+                                resources = costResult.ResourceCosts.Select(rc => new 
+                                {
+                                    rc.ResourceName,
+                                    rc.ResourceType,
+                                    rc.Cost,
+                                    rc.Currency
+                                })
+                            };
+                            
+                            response = new
+                            {
+                                jsonrpc = "2.0",
+                                id,
+                                result = new
+                                {
+                                    content = new[]
+                                    {
+                                        new
+                                        {
+                                            type = "text",
+                                            text = System.Text.Json.JsonSerializer.Serialize(costToolOutput, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase })
+                                        }
+                                    }
+                                }
+                            };
+                            break;
+
+                        case "GetResourceUtilization":
+                            var utilResourceGroupName = arguments.GetValueOrDefault("resourceGroupName")?.ToString();
+                            var resourceTypeFilter = arguments.GetValueOrDefault("resourceTypeFilter")?.ToString();
+                            
+                            var utilResult = await resourceManager.GetResourceUtilizationAsync(utilResourceGroupName);
+                            
+                            if (!string.IsNullOrEmpty(resourceTypeFilter))
+                            {
+                                utilResult = utilResult.Where(r => r.Type.Contains(resourceTypeFilter, StringComparison.OrdinalIgnoreCase)).ToList();
+                            }
+                            
+                            var utilToolOutput = new 
+                            {
+                                totalResources = utilResult.Count,
+                                resources = utilResult
+                            };
+                            
+                            response = new
+                            {
+                                jsonrpc = "2.0",
+                                id,
+                                result = new
+                                {
+                                    content = new[]
+                                    {
+                                        new
+                                        {
+                                            type = "text",
+                                            text = System.Text.Json.JsonSerializer.Serialize(utilToolOutput, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase })
+                                        }
+                                    }
+                                }
+                            };
+                            break;
+
+                        case "AuditResources":
+                            var auditResourceGroupName = arguments.GetValueOrDefault("resourceGroupName")?.ToString();
+                            var auditResult = await securityAuditor.AuditResourcesAsync(auditResourceGroupName);
+                            
+                            var auditToolOutput = new 
+                            {
+                                auditResult.SecurityScore,
+                                assessment = (auditResult.SecurityScore >= 80 ? "Good" : auditResult.SecurityScore >= 60 ? "Fair" : "Poor"),
+                                auditResult.TotalResources,
+                                auditResult.ResourcesWithIssues,
+                                issues = auditResult.Issues
+                            };
+                            
+                            response = new
+                            {
+                                jsonrpc = "2.0",
+                                id,
+                                result = new
+                                {
+                                    content = new[]
+                                    {
+                                        new
+                                        {
+                                            type = "text",
+                                            text = System.Text.Json.JsonSerializer.Serialize(auditToolOutput, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase })
+                                        }
+                                    }
+                                }
+                            };
+                            break;
+
+                        default:
+                            response = new
+                            {
+                                jsonrpc = "2.0",
+                                id,
+                                error = new
+                                {
+                                    code = -32601,
+                                    message = $"Method not found: {method}"
+                                }
+                            };
+                            break;
+                    }
                     break;
             }
 
-            await context.Response.WriteAsync(JsonSerializer.Serialize(response));
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(response));
         }
         catch (Exception ex)
         {
@@ -214,62 +332,8 @@ public class CustomMcpServer
                 }
             };
 
-            await context.Response.WriteAsync(JsonSerializer.Serialize(errorResponse));
+            await context.Response.WriteAsync(System.Text.Json.JsonSerializer.Serialize(errorResponse));
         }
-    }
+    });
 
-    private string GetToolDescription(string toolName)
-    {
-        return toolName switch
-        {
-            "GetResourceCosts" => "Gets cost information for Azure resources with optional filtering by resource group",
-            "GetResourceUtilization" => "Gets utilization information for Azure resources",
-            "AuditResources" => "Performs security audit on Azure resources",
-            _ => "Azure management tool"
-        };
-    }
-
-    private object FormatResult(string toolName, object result)
-    {
-        if (toolName == "GetResourceCosts" && result != null)
-        {
-            // Cast to the expected structure and format
-            var json = JsonSerializer.Serialize(result);
-            var costInfo = JsonSerializer.Deserialize<JsonElement>(json);
-            
-            if (costInfo.TryGetProperty("TotalCost", out var totalCost) &&
-                costInfo.TryGetProperty("Currency", out var currency) &&
-                costInfo.TryGetProperty("ResourceCosts", out var resourceCosts))
-            {
-                var formattedCosts = new List<object>();
-                foreach (var cost in resourceCosts.EnumerateArray())
-                {
-                    formattedCosts.Add(new
-                    {
-                        ResourceName = cost.GetProperty("ResourceName").GetString(),
-                        ResourceType = cost.GetProperty("ResourceType").GetString(),
-                        Cost = cost.GetProperty("Cost").GetDouble(),
-                        Currency = cost.GetProperty("Currency").GetString()
-                    });
-                }
-
-                return new
-                {
-                    Summary = $"Total Cost: {totalCost.GetDouble():C} {currency.GetString()}",
-                    Period = $"{costInfo.GetProperty("PeriodStart").GetDateTime():yyyy-MM-dd} to {costInfo.GetProperty("PeriodEnd").GetDateTime():yyyy-MM-dd}",
-                    Resources = formattedCosts
-                };
-            }
-        }
-        
-        return result;
-    }
-
-    private string ExtractResourceLocation(string resourceId)
-    {
-        // For now, return a default location since Azure resource IDs don't consistently include location
-        // In a real implementation, you would query the Azure Resource Graph or Resource Manager API
-        // to get the actual location of each resource
-        return "Azure Cloud";
-    }
-}
+app.Run();

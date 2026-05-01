@@ -99,3 +99,4 @@ C:\projects\MCP\src\AzureDevOpsAssistant\obj\Debug\net8.0\AzureDevOpsAssistant.p
 C:\projects\MCP\src\AzureDevOpsAssistant\obj\Debug\net8.0\AzureDevOpsAssistant.genruntimeconfig.cache
 C:\projects\MCP\src\AzureDevOpsAssistant\bin\Debug\net8.0\AzureDevOpsAssistant.pdb
 C:\projects\MCP\src\AzureDevOpsAssistant\obj\Debug\net8.0\ref\AzureDevOpsAssistant.dll
+C:\projects\MCP\src\AzureDevOpsAssistant\obj\Debug\net8.0\AzureDevOpsAssistant.sourcelink.json

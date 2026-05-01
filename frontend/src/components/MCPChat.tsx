@@ -43,55 +43,153 @@ const MCPChat: React.FC = () => {
     setConsoleLogs(prev => [...prev, `[${timestamp}] ${cleanMessage}`]);
   };
 
+  const parseCostResponse = (text: string) => {
+    const costMatch = text.match(/Total Cost: \$([0-9,]+\.\d+)/);
+    const periodMatch = text.match(/Period: ([\d-]+) to ([\d-]+)/);
+    const resourcesMatch = text.match(/Resources: (\d+)/);
+    
+    const resources: any[] = [];
+    const lines = text.split('\n');
+    let inResourcesSection = false;
+    
+    for (const line of lines) {
+      if (line.includes('Top') && line.includes('Most Expensive')) {
+        inResourcesSection = true;
+        continue;
+      }
+      if (inResourcesSection && line.startsWith('-')) {
+        const match = line.match(/- ([^(]+) \(([^)]+)\): \$([0-9,]+\.\d+)/);
+        if (match) {
+          resources.push({
+            resourceName: match[1].trim(),
+            resourceType: match[2],
+            cost: parseFloat(match[3].replace(/,/g, ''))
+          });
+        }
+      }
+    }
+    
+    return {
+      summary: `Total Cost: ${costMatch ? costMatch[1] : '0'} USD`,
+      totalCost: costMatch ? parseFloat(costMatch[1].replace(/,/g, '')) : 0,
+      currency: 'USD',
+      periodStart: periodMatch ? periodMatch[1] : '',
+      periodEnd: periodMatch ? periodMatch[2] : '',
+      resources: resources
+    };
+  };
+
+  const parseSecurityResponse = (text: string) => {
+    const scoreMatch = text.match(/Security Score: (\d+)%/);
+    const issuesMatch = text.match(/Issues: (\d+)/);
+    const secureMatch = text.match(/Secure Resources: (\d+)/);
+    const problemMatch = text.match(/Resources with Issues: (\d+)/);
+    
+    const score = scoreMatch ? parseInt(scoreMatch[1]) : 0;
+    
+    return {
+      securityScore: score,
+      assessment: score >= 80 ? 'Good' : score >= 60 ? 'Fair' : 'Poor',
+      totalResources: 0,
+      resourcesWithIssues: problemMatch ? parseInt(problemMatch[1]) : 0,
+      issues: []
+    };
+  };
+
+  const parseResourcesResponse = (text: string) => {
+    const resourcesMatch = text.match(/Total Resources: (\d+)/);
+    const groupsMatch = text.match(/Resource Groups: (\d+)/);
+    const typesMatch = text.match(/Resource Types: (\d+)/);
+    
+    return {
+      totalResources: resourcesMatch ? parseInt(resourcesMatch[1]) : 0,
+      resourceGroups: groupsMatch ? parseInt(groupsMatch[1]) : 0,
+      resourceTypes: typesMatch ? parseInt(typesMatch[1]) : 0,
+      resources: []
+    };
+  };
+
   const formatResponse = (response: string, command: string) => {
     try {
-      const data = JSON.parse(response);
+      console.log('=== MCP Response ===');
+      console.log('Raw response:', response);
+      
+      const mcpResponse = JSON.parse(response);
+      console.log('Parsed MCP response:', mcpResponse);
+      
+      // The content is nested under result.content
+      const content = mcpResponse.result?.content || mcpResponse.content;
+      if (!content || !Array.isArray(content) || content.length === 0) {
+        console.log('No content found in response');
+        return { type: 'text', data: response };
+      }
+
+      const textContent = content[0].text;
+      console.log('Text content:', textContent);
+      console.log('Text content type:', typeof textContent);
+      
+      let toolOutput: any;
+      try {
+        toolOutput = JSON.parse(textContent);
+        console.log('Parsed as JSON:', toolOutput);
+      } catch (e) {
+        console.log('Not JSON, parsing as plain text');
+        // Parse the plain text response
+        if (textContent.includes('Total Cost')) {
+          toolOutput = parseCostResponse(textContent);
+        } else if (textContent.includes('Security Score')) {
+          toolOutput = parseSecurityResponse(textContent);
+        } else if (textContent.includes('Total Resources')) {
+          toolOutput = parseResourcesResponse(textContent);
+        } else {
+          toolOutput = { rawText: textContent };
+        }
+        console.log('Parsed plain text:', toolOutput);
+      }
+      
       const lowerCommand = command.toLowerCase();
 
       // Check if response contains cost data
-      if (data.result && data.result.Summary && data.result.Summary.includes('Total Cost')) {
-                return {
+      if (toolOutput.totalCost !== undefined || textContent.includes('Total Cost')) {
+        return {
           type: 'cost',
-          data: data.result
+          data: toolOutput
         };
       }
 
-      if (lowerCommand.includes('audit') || lowerCommand.includes('security')) {
-                return {
+      if (lowerCommand.includes('audit') || lowerCommand.includes('security') || textContent.includes('Security Score')) {
+        return {
           type: 'security',
-          data: data.result || data
+          data: toolOutput
         };
       }
 
       // Check if response contains resource utilization data
-      if (data.result && (Array.isArray(data.result) || data.result.TotalResources !== undefined || data.result.Resources)) {
-                // If result is an array, wrap it in the expected format
-        const resourceData = Array.isArray(data.result) 
-          ? { Resources: data.result, TotalResources: data.result.length }
-          : data.result || data;
+      if (toolOutput.totalResources !== undefined || textContent.includes('Total Resources')) {
         return {
           type: 'resources',
-          data: resourceData,
-          command: command // Store the command for filtering
+          data: toolOutput,
+          command: command
         };
       }
 
       if (lowerCommand.includes('backup')) {
-                return {
+        return {
           type: 'backup',
-          data: data.result || data
+          data: toolOutput
         };
       }
 
       if (lowerCommand.includes('log') || lowerCommand.includes('query')) {
-                return {
+        return {
           type: 'logs',
-          data: data.result || data
+          data: toolOutput
         };
       }
 
-      return { type: 'text', data: data.result || data };
+      return { type: 'text', data: textContent };
     } catch (error) {
+      // If parsing fails at any stage, return the raw response as text
       return { type: 'text', data: response };
     }
   };
@@ -206,51 +304,58 @@ const MCPChat: React.FC = () => {
               </Grid>
 
               {/* Resource Breakdown */}
-              <Grid item xs={12} md={6}>
+              <Grid item xs={12}>
                 <Card variant="outlined">
                   <CardContent>
                     <Box display="flex" alignItems="center" mb={2}>
                       <Typography variant="h6" color="primary" sx={{ mr: 1 }}>💰</Typography>
                       <Typography variant="h6">Cost Analysis</Typography>
                     </Box>
-                    <Typography variant="h4" color="primary" mb={1}>
-                      {formattedData.data.Summary}
+                    <Box display="flex" justifyContent="space-between" alignItems="baseline" mb={2}>
+                      <Box>
+                        <Typography variant="h4" color="primary">
+                          ${formattedData.data.totalCost?.toFixed(2) || '0.00'}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {formattedData.data.currency} • {formattedData.data.resources?.length || 0} resources
+                        </Typography>
+                      </Box>
+                      {formattedData.data.periodStart && formattedData.data.periodEnd && (
+                        <Typography variant="body2" color="text.secondary">
+                          {new Date(formattedData.data.periodStart).toLocaleDateString()} to {new Date(formattedData.data.periodEnd).toLocaleDateString()}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Typography variant="subtitle2" mb={1} fontWeight="bold">
+                      Top {Math.min(10, formattedData.data.resources?.length || 0)} Cost Contributors
                     </Typography>
-                    {formattedData.data.Resources && (
-                      <Typography variant="caption" color="text.secondary" mb={2}>
-                        📊 Total from {formattedData.data.Resources.length} resources
-                      </Typography>
-                    )}
-                    {formattedData.data.Period && (
-                      <Typography variant="body2" color="text.secondary" mb={2}>
-                        {formattedData.data.Period}
-                      </Typography>
-                    )}
-                    <Typography variant="h6" mb={2}>
-                      Top {Math.min(10, formattedData.data.Resources?.length || 0)} Cost Contributors
-                    </Typography>
-                    <Typography variant="caption" color="text.secondary" mb={2}>
-                      Showing {Math.min(10, formattedData.data.Resources?.length || 0)} of {formattedData.data.Resources?.length || 0} total resources
-                    </Typography>
-                    {formattedData.data.Resources && formattedData.data.Resources.length > 0 ? (
-                      formattedData.data.Resources.slice(0, 10).map((resource: any, index: number) => (
-                        <Box key={index} mb={1} p={1} sx={{ border: 1, borderColor: 'divider', borderRadius: 1 }}>
-                          <Box display="flex" justifyContent="space-between" alignItems="center" mb={1}>
-                            <Typography variant="body2" fontWeight="bold">
-                              {resource.ResourceName}
-                            </Typography>
-                            <Typography variant="h6" color="primary">
-                              ${resource.Cost.toFixed(2)}
-                            </Typography>
-                          </Box>
-                          <Typography variant="caption" color="text.secondary">
-                            {resource.ResourceType}
-                          </Typography>
-                          <Typography variant="caption" color="info.main">
-                            📊 {((resource.Cost / (formattedData.data.Resources?.reduce((sum: number, r: any) => sum + r.Cost, 0) || 1)) * 100).toFixed(1)}% of total cost
-                          </Typography>
+                    {formattedData.data.resources && formattedData.data.resources.length > 0 ? (
+                      <>
+                        {console.log('Top 10 resources:', formattedData.data.resources.slice(0, 10))}
+                        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                          {formattedData.data.resources.slice(0, 10).map((resource: any, index: number) => {
+                            const percentage = ((resource.cost / (formattedData.data.resources?.reduce((sum: number, r: any) => sum + r.cost, 0) || 1)) * 100).toFixed(1);
+                            return (
+                              <Box key={index} sx={{ display: 'grid', gridTemplateColumns: '1fr 80px 60px', gap: 1, alignItems: 'center', py: 0.5, borderBottom: '1px solid #eee' }}>
+                                <Box sx={{ minWidth: 0 }}>
+                                  <Typography variant="body2" fontWeight="500" noWrap title={resource.resourceName}>
+                                    {resource.resourceName}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary" noWrap>
+                                    {resource.resourceType}
+                                  </Typography>
+                                </Box>
+                                <Typography variant="body2" fontWeight="bold" color="primary" sx={{ textAlign: 'right' }}>
+                                  ${resource.cost.toFixed(2)}
+                                </Typography>
+                                <Typography variant="caption" color="info.main" sx={{ textAlign: 'right' }}>
+                                  {percentage}%
+                                </Typography>
+                              </Box>
+                            );
+                          })}
                         </Box>
-                      ))
+                      </>
                     ) : (
                       <Typography variant="body2" color="text.secondary">
                         Resource breakdown not available

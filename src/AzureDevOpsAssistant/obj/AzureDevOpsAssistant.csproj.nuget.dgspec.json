@@ -106,6 +106,10 @@
               "target": "Package",
               "version": "[8.0.8, )"
             },
+            "Microsoft.Extensions.Hosting": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            },
             "Microsoft.Extensions.Options.ConfigurationExtensions": {
               "target": "Package",
               "version": "[8.0.8, )"
@@ -114,9 +118,13 @@
               "target": "Package",
               "version": "[3.0.0, )"
             },
+            "ModelContextProtocol": {
+              "target": "Package",
+              "version": "[1.2.0, )"
+            },
             "ModelContextProtocol.AspNetCore": {
               "target": "Package",
-              "version": "[1.0.0-rc.1, )"
+              "version": "[1.0.0, )"
             },
             "Swashbuckle.AspNetCore": {
               "target": "Package",
